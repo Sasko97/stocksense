@@ -8,6 +8,7 @@ Neu in Phase 2:
 - Bollinger Bands
 """
 
+import time
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -47,43 +48,66 @@ TIMEFRAME_OPTIONS = {
 def load_stock_data(ticker: str, period: str, interval: str) -> pd.DataFrame:
     """
     Lädt historische Kursdaten für einen Ticker.
-
-    Neu: interval-Parameter steuert die Kerzen-Größe:
-    "1m" = jede Kerze = 1 Minute, "1d" = 1 Tag usw.
+    Bei Rate-Limit-Fehlern wird bis zu 3x automatisch neu versucht.
     """
-    data = yf.download(
-        ticker,
-        period=period,
-        interval=interval,
-        auto_adjust=True,
-        progress=False,
+    last_error = None
+
+    for attempt in range(3):
+        try:
+            data = yf.download(
+                ticker,
+                period=period,
+                interval=interval,
+                auto_adjust=True,
+                progress=False,
+            )
+
+            if data.empty:
+                raise ValueError(f"Keine Daten für '{ticker}' gefunden. Ticker korrekt?")
+
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+
+            if data.index.tz is not None:
+                data.index = data.index.tz_localize(None)
+
+            return data
+
+        except ValueError:
+            raise   # Ticker-Fehler sofort weitergeben, nicht nochmal versuchen
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(2 + attempt * 2)   # 2s, dann 4s warten
+
+    raise ValueError(
+        f"Yahoo Finance antwortet gerade nicht für '{ticker}'. "
+        f"Bitte 30 Sekunden warten und neu laden. (Fehler: {last_error})"
     )
-
-    if data.empty:
-        raise ValueError(f"Keine Daten für '{ticker}' gefunden. Ticker korrekt?")
-
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-
-    # Zeitzone entfernen damit Plotly keine Probleme macht
-    if data.index.tz is not None:
-        data.index = data.index.tz_localize(None)
-
-    return data
 
 
 def get_ticker_info(ticker: str) -> dict:
-    """Holt Basisinfos zur Aktie."""
-    info = yf.Ticker(ticker).info
-    return {
-        "name":      info.get("longName", ticker),
-        "currency":  info.get("currency", ""),
-        "sector":    info.get("sector", "—"),
-        "price":     info.get("currentPrice") or info.get("regularMarketPrice"),
-        "52w_high":  info.get("fiftyTwoWeekHigh"),
-        "52w_low":   info.get("fiftyTwoWeekLow"),
-        "pe_ratio":  info.get("trailingPE"),
-    }
+    """Holt Basisinfos — bei Fehler werden Standardwerte zurückgegeben."""
+    try:
+        info = yf.Ticker(ticker).info
+        return {
+            "name":      info.get("longName", ticker),
+            "currency":  info.get("currency", ""),
+            "sector":    info.get("sector", "—"),
+            "price":     info.get("currentPrice") or info.get("regularMarketPrice"),
+            "52w_high":  info.get("fiftyTwoWeekHigh"),
+            "52w_low":   info.get("fiftyTwoWeekLow"),
+            "pe_ratio":  info.get("trailingPE"),
+        }
+    except Exception:
+        # Wenn die Info nicht geladen werden kann, einfach Standardwerte
+        return {
+            "name": ticker, "currency": "", "sector": "—",
+            "price": None, "52w_high": None, "52w_low": None, "pe_ratio": None,
+        }
+
+
+
 
 
 def compute_returns(df: pd.DataFrame) -> pd.DataFrame:
